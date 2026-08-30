@@ -98,6 +98,15 @@ def read_drive_temp(dev, dtype):
     return None
 
 
+def drive_name(dev, dtype):
+    # Controller-addressed entries like "/dev/bus/0 -d megaraid,4" have a
+    # useless basename ("0") — name them by their controller slot instead.
+    if dtype and "," in dtype:
+        kind, idx = dtype.split(",", 1)
+        return f"{kind}-{idx}"
+    return os.path.basename(dev)
+
+
 def drive_loop():
     global _drives
     while True:
@@ -105,7 +114,7 @@ def drive_loop():
         for dev, dtype in scan_drives():
             t = read_drive_temp(dev, dtype)
             if t is not None:
-                found[os.path.basename(dev)] = t
+                found[drive_name(dev, dtype)] = t
         with _drives_lock:
             _drives = found
         time.sleep(DRIVE_REFRESH)

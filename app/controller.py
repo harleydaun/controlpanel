@@ -65,6 +65,7 @@ class Controller:
         self.temp_backend = None      # "host" | "idrac" — where control temps came from
         self._ambient = {}            # inlet/exhaust from iDRAC when exporter is primary
         self._last_sample = 0.0       # history writes are capped at ~1/10s
+        self._last_drive_sample = 0.0 # per-drive history: one batch per minute
         self.manual_ctl = False       # True once "enable manual control" was sent
         self.pid_last_ts = None       # monotonic time of last PID step (real dt)
         self._write_target = None     # latest fan % awaiting an IPMI write
@@ -291,7 +292,9 @@ class Controller:
         source = "idrac"
         if ta["enabled"] and ta["url"]:
             try:
-                temps, self.drives = await self._read_external(ta)
+                temps, drv = await self._read_external(ta)
+                ignore = set(cfg["drives"]["ignore"])
+                self.drives = {k: v for k, v in drv.items() if k not in ignore}
                 source = "host"
                 if self.ext_fail:
                     self.log("info", "Host temp source recovered")
@@ -395,6 +398,9 @@ class Controller:
                 power=self.power, mode=mode,
                 emergency=self.emergency or self.degraded,
                 drive_max=max(self.drives.values()) if self.drives else None)
+        if self.drives and now_ts - self._last_drive_sample >= 55.0:
+            self._last_drive_sample = now_ts
+            self.history.add_drive_samples(self.drives)
 
     async def _pid_step(self, cfg, raw):
         """Hold pid.setpoint using the least fan possible.

@@ -302,16 +302,20 @@ const chPower = lineChart("chart-power", [
   { label: "Power", borderColor: COLORS.power, data: [] },
 ], { yMin: 0, unit: " W", legend: false });
 
-const chDrives = lineChart("chart-drives", [
-  { label: "Hottest drive", borderColor: "#d55181", data: [] },   // slot 5 magenta
-  { label: "Warn setpoint", borderColor: "#fab219", borderDash: [6, 5], data: [], pointRadius: 0, pointHoverRadius: 0 },
-], { unit: "°C", legend: true });
+// One thin line per drive, all in one hue — identity comes from the hover
+// tooltip; only the warn setpoint gets a legend entry.
+const DRIVE_LINE = "rgba(213, 81, 129, 0.7)";  // slot 5 magenta
+const chDrives = lineChart("chart-drives", [], { unit: "°C", legend: true });
 chDrives.options.scales.y.suggestedMin = 28;
 chDrives.options.scales.y.suggestedMax = 50;
+chDrives.options.plugins.legend.labels.filter = (item) => item.text === "Warn setpoint";
 
 async function loadHistory() {
   try {
-    const rows = await api(`/api/history?seconds=${historyRange}&points=400`);
+    const [rows, driveRows] = await Promise.all([
+      api(`/api/history?seconds=${historyRange}&points=400`),
+      api(`/api/history/drives?seconds=${historyRange}&points=400`).catch(() => ({})),
+    ]);
     const pick = (k) => rows.map(r => ({ x: r.ts, y: r[k] }));
     chTemps.data.datasets[0].data = pick("control");
     chTemps.data.datasets[1].data = pick("inlet");
@@ -320,13 +324,20 @@ async function loadHistory() {
     chFan.data.datasets[1].data = pick("target_pct");
     chPower.data.datasets[0].data = pick("power");
     const now = Math.floor(Date.now() / 1000);
-    const driveData = pick("drive_max").filter(p => p.y != null);
-    const haveDrives = driveData.length > 0 || (status && Object.keys(status.drives || {}).length);
+    const ignore = new Set(config ? config.drives.ignore : []);
+    const names = Object.keys(driveRows).filter(n => !ignore.has(n)).sort();
+    const haveDrives = names.length > 0 || (status && Object.keys(status.drives || {}).length);
     $("drive-chart-panel").hidden = !haveDrives;
-    chDrives.data.datasets[0].data = pick("drive_max");
     const warn = config ? config.drives.warn_temp : null;
-    chDrives.data.datasets[1].data = warn != null
-      ? [{ x: now - historyRange, y: warn }, { x: now, y: warn }] : [];
+    chDrives.data.datasets = [
+      { label: "Warn setpoint", borderColor: "#fab219", borderDash: [6, 5],
+        pointRadius: 0, pointHoverRadius: 0,
+        data: warn != null ? [{ x: now - historyRange, y: warn }, { x: now, y: warn }] : [] },
+      ...names.map(n => ({
+        label: n, borderColor: DRIVE_LINE, borderWidth: 1.5,
+        data: driveRows[n].map(r => ({ x: r.ts, y: r.temp })),
+      })),
+    ];
     [chTemps, chFan, chPower, chDrives].forEach(c => {
       c.options.scales.x.min = now - historyRange;
       c.options.scales.x.max = now;
@@ -416,8 +427,9 @@ function renderStatus() {
       ? `⚠ ${hot} at/above ${warn}°C` : `all below ${warn}°C`;
     $("drive-grid").innerHTML = driveNames.map(n => {
       const w = drives[n] >= warn;
-      return `<div class="drive-chip${w ? " warn" : ""}">
-        <span class="dn">${n.replace(/</g, "&lt;")}</span>
+      const safe = n.replace(/[<>"']/g, "");
+      return `<div class="drive-chip${w ? " warn" : ""}" data-name="${safe}" title="Click to hide this drive">
+        <span class="dn">${safe}</span>
         <span class="dt">${w ? "⚠ " : ""}${Math.round(drives[n])}°</span></div>`;
     }).join("");
   }
@@ -541,6 +553,7 @@ function fillSettings() {
   $("s-source").value = config.temp_source;
   $("s-ext-on").checked = config.temp_api.enabled;
   $("s-ext-url").value = config.temp_api.url;
+  $("s-driveignore").value = (config.drives.ignore || []).join(", ");
   $("manual-slider").value = config.manual_percent;
   $("manual-value").textContent = `${config.manual_percent}%`;
 }
@@ -550,7 +563,8 @@ $("settings-apply").addEventListener("click", async () => {
   const patch = {
     temp_source: $("s-source").value,
     temp_api: { enabled: $("s-ext-on").checked, url: $("s-ext-url").value.trim() },
-    smoothing: {}, emergency: {}, history: {}, pid: {}, drives: {},
+    smoothing: {}, emergency: {}, history: {}, pid: {},
+    drives: { ignore: $("s-driveignore").value.split(",").map(s => s.trim()).filter(Boolean) },
   };
   for (const [id, path] of Object.entries(S)) {
     const v = +$(id).value;
@@ -623,6 +637,21 @@ $("profile-delete").addEventListener("click", async () => {
     fillProfiles();
     toast(`Profile “${name}” deleted`);
   } catch (e) { toast(e.message, true); }
+});
+
+$("drive-grid").addEventListener("click", async (e) => {
+  const chip = e.target.closest(".drive-chip");
+  if (!chip || !config) return;
+  const name = chip.dataset.name;
+  if (!confirm(`Hide drive "${name}" from monitoring?\nRestore it later via Controller settings → Ignore drives.`)) return;
+  const ignore = [...new Set([...(config.drives.ignore || []), name])];
+  try {
+    config = await api("/api/config", { method: "PUT", body: JSON.stringify({ drives: { ignore } }) });
+    fillSettings();
+    toast(`Ignoring ${name}`);
+    await refreshStatus();
+    await loadHistory();
+  } catch (err) { toast(err.message, true); }
 });
 
 /* ================================= events ================================ */

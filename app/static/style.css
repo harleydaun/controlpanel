@@ -154,8 +154,9 @@ input[type="number"], input[type="text"], select {
 .drive-chip {
   background: var(--page); border: 1px solid var(--border); border-radius: 8px;
   padding: 6px 10px; display: flex; justify-content: space-between; gap: 6px;
-  font-size: 12.5px;
+  font-size: 12.5px; cursor: pointer;
 }
+.drive-chip:hover { border-color: var(--muted); }
 .drive-chip .dn { color: var(--muted); }
 .drive-chip .dt { font-variant-numeric: tabular-nums; color: var(--ink-2); }
 .drive-chip.warn { border-color: rgba(250, 178, 25, 0.6); }

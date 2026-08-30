@@ -51,7 +51,10 @@ DEFAULT_CONFIG = {
         "max_pct": 100,
     },
     "history": {"retention_days": 14},
-    "drives": {"warn_temp": 45},  # display-only threshold; never drives control
+    "drives": {                   # display-only; never drives control
+        "warn_temp": 45,
+        "ignore": [],             # drive names to hide entirely
+    },
     "profiles": {},               # name -> {curve, smoothing}
 }
 
@@ -141,6 +144,10 @@ def validate(cfg):
 
     d = c.get("drives", {})
     d["warn_temp"] = int(_num(d.get("warn_temp", 45), 25, 70, "drive warn_temp"))
+    ign = d.get("ignore", [])
+    if not isinstance(ign, list) or len(ign) > 64:
+        raise ValueError("drives.ignore must be a list of up to 64 names")
+    d["ignore"] = sorted({str(x).strip()[:64] for x in ign if str(x).strip()})
     c["drives"] = d
 
     profiles = c.get("profiles", {})

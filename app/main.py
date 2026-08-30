@@ -47,6 +47,13 @@ def get_history(seconds: int = 3600, points: int = 400):
     return history.query(seconds, points)
 
 
+@app.get("/api/history/drives")
+def get_drive_history(seconds: int = 3600, points: int = 400):
+    seconds = max(60, min(seconds, 90 * 86400))
+    points = max(10, min(points, 2000))
+    return history.query_drives(seconds, points)
+
+
 @app.get("/api/events")
 def get_events(limit: int = 200):
     return history.events(max(1, min(limit, 1000)))

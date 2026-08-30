@@ -26,6 +26,10 @@ class History:
                     ts INTEGER NOT NULL, level TEXT, message TEXT
                 );
                 CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
+                CREATE TABLE IF NOT EXISTS drive_samples (
+                    ts INTEGER NOT NULL, name TEXT NOT NULL, temp REAL
+                );
+                CREATE INDEX IF NOT EXISTS idx_drive_samples_ts ON drive_samples(ts);
             """)
             cols = [r[1] for r in self._db.execute("PRAGMA table_info(samples)")]
             if "drive_max" not in cols:  # migration for pre-drive-temp databases
@@ -67,6 +71,29 @@ class History:
                 "fan_pct", "target_pct", "rpm", "power", "emergency", "drive_max")
         return [dict(zip(keys, r)) for r in rows]
 
+    def add_drive_samples(self, drives):
+        if not drives:
+            return
+        ts = int(time.time())
+        with self._lock:
+            self._db.executemany(
+                "INSERT INTO drive_samples (ts, name, temp) VALUES (?,?,?)",
+                [(ts, n, float(t)) for n, t in drives.items()])
+            self._db.commit()
+
+    def query_drives(self, seconds, points=400):
+        since = int(time.time()) - int(seconds)
+        bucket = max(1, int(seconds) // max(10, int(points)))
+        with self._lock:
+            rows = self._db.execute(
+                """SELECT (ts/?)*? AS t, name, avg(temp) FROM drive_samples
+                   WHERE ts >= ? GROUP BY t, name ORDER BY t""",
+                (bucket, bucket, since)).fetchall()
+        out = {}
+        for t, name, temp in rows:
+            out.setdefault(name, []).append({"ts": t, "temp": round(temp, 1)})
+        return out
+
     def events(self, limit=200):
         with self._lock:
             rows = self._db.execute(
@@ -79,4 +106,5 @@ class History:
         with self._lock:
             self._db.execute("DELETE FROM samples WHERE ts < ?", (cutoff,))
             self._db.execute("DELETE FROM events WHERE ts < ?", (cutoff,))
+            self._db.execute("DELETE FROM drive_samples WHERE ts < ?", (cutoff,))
             self._db.commit()
