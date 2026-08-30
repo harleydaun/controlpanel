@@ -110,11 +110,24 @@ def drive_name(dev, dtype):
 def drive_loop():
     global _drives
     while True:
-        found = {}
+        # Controller-addressed entries (megaraid,N on /dev/bus/0) are usually
+        # the same physical drives as the native /dev/sdX devices, seen through
+        # the PERC. Read native devices first; only fall back to the controller
+        # path if none of them report temps (i.e. PERC in RAID mode, where the
+        # sdX devices are virtual disks without SMART).
+        native, ctrl = [], []
         for dev, dtype in scan_drives():
+            (ctrl if (dtype and "," in dtype) else native).append((dev, dtype))
+        found = {}
+        for dev, dtype in native:
             t = read_drive_temp(dev, dtype)
             if t is not None:
                 found[drive_name(dev, dtype)] = t
+        if not found:
+            for dev, dtype in ctrl:
+                t = read_drive_temp(dev, dtype)
+                if t is not None:
+                    found[drive_name(dev, dtype)] = t
         with _drives_lock:
             _drives = found
         time.sleep(DRIVE_REFRESH)
