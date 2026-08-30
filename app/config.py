@@ -37,11 +37,19 @@ DEFAULT_CONFIG = {
         "trigger_temp": 80,       # raw temp >= this -> failsafe + Dell auto
         "clear_temp": 76,         # raw temp <= this -> reclaim manual control
     },
+    "pid": {                      # "smart" mode: hold setpoint with minimum fan
+        "setpoint": 75,           # target CPU temp (C)
+        "kp": 4.0,                # % fan per degree of error
+        "ki": 0.02,               # % fan per degree-second (steady-state term)
+        "kd": 0.0,                # % fan per (degree/second) of temp slope
+        "min_pct": 8,
+        "max_pct": 100,
+    },
     "history": {"retention_days": 14},
     "profiles": {},               # name -> {curve, smoothing}
 }
 
-MODES = ("curve", "manual", "dell")
+MODES = ("curve", "pid", "manual", "dell")
 TEMP_SOURCES = ("cpu_max", "cpu_avg", "all_max")
 
 
@@ -91,6 +99,17 @@ def validate(cfg):
     s["max_step_down"] = int(_num(s.get("max_step_down"), 1, 100, "max_step_down"))
     s["down_hold_polls"] = int(_num(s.get("down_hold_polls"), 0, 120, "down_hold_polls"))
     c["smoothing"] = s
+
+    p = c.get("pid", {})
+    p["setpoint"] = round(float(_num(p.get("setpoint"), 40, 95, "pid setpoint")), 1)
+    p["kp"] = round(float(_num(p.get("kp"), 0, 50, "pid kp")), 3)
+    p["ki"] = round(float(_num(p.get("ki"), 0, 2, "pid ki")), 4)
+    p["kd"] = round(float(_num(p.get("kd"), 0, 100, "pid kd")), 3)
+    p["min_pct"] = int(_num(p.get("min_pct"), 0, 100, "pid min_pct"))
+    p["max_pct"] = int(_num(p.get("max_pct"), 0, 100, "pid max_pct"))
+    if p["max_pct"] <= p["min_pct"]:
+        raise ValueError("pid max_pct must be above min_pct")
+    c["pid"] = p
 
     e = c.get("emergency", {})
     e["trigger_temp"] = int(_num(e.get("trigger_temp"), 40, 105, "trigger_temp"))

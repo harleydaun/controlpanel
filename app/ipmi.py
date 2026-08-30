@@ -142,6 +142,8 @@ class MockIpmi(Ipmi):
         self._pct = 40
         self._manual = False
         self._third_party_disabled = False
+        self._cpu = 55.0
+        self._last = time.time()
 
     def _wave(self, base, amp, period, phase=0.0):
         return base + amp * math.sin((time.time() - self._t0) / period + phase)
@@ -150,12 +152,19 @@ class MockIpmi(Ipmi):
         return None
 
     async def read_temps(self):
-        load = max(0.0, self._wave(0.5, 0.55, 300))
+        # First-order thermal model that responds to fan speed, so closed-loop
+        # control (PID) actually converges in mock mode.
+        now = time.time()
+        dt = min(now - self._last, 60.0)
+        self._last = now
+        load = max(0.05, self._wave(0.55, 0.45, 300))          # 0.05 .. 1.0
+        equilibrium = 32 + load * 62 - 0.32 * self._pct
+        self._cpu += (equilibrium - self._cpu) * (1 - math.exp(-dt / 45))
         return {
             "Inlet Temp": round(self._wave(22, 1, 900)),
-            "Exhaust Temp": round(30 + load * 14),
-            "CPU1 Temp": round(48 + load * 26 + self._wave(0, 1.5, 37)),
-            "CPU2 Temp": round(45 + load * 22 + self._wave(0, 1.5, 53, 1.0)),
+            "Exhaust Temp": round(self._cpu * 0.5 + 12),
+            "CPU1 Temp": round(self._cpu + self._wave(0, 1.2, 37)),
+            "CPU2 Temp": round(self._cpu - 3 + self._wave(0, 1.2, 53, 1.0)),
         }
 
     async def read_fans(self):

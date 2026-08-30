@@ -259,7 +259,7 @@ const chTemps = lineChart("chart-temps", [
 
 const chFan = lineChart("chart-fan", [
   { label: "Fan output", borderColor: COLORS.fan, data: [] },
-  { label: "Curve target", borderColor: COLORS.muted, borderDash: [5, 4], data: [] },
+  { label: "Controller target", borderColor: COLORS.muted, borderDash: [5, 4], data: [] },
 ], { yMin: 0, yMax: 100, unit: "%", legend: true });
 
 const chPower = lineChart("chart-power", [
@@ -339,6 +339,7 @@ function renderStatus() {
     mode === "dell" || status.degraded ? "Dell auto control" :
     status.emergency ? "emergency — Dell auto" :
     mode === "manual" ? "manual" :
+    mode === "pid" ? `smart · target ${config ? config.pid.setpoint : "?"}°C` :
     status.target_pct != null ? `curve target ${status.target_pct}%` : "curve";
   if (status.fan_pct == null) $("t-fan").textContent = mode === "dell" ? "auto" : "–";
 
@@ -350,6 +351,7 @@ function renderStatus() {
   document.querySelectorAll("#mode-switch button").forEach(b =>
     b.classList.toggle("active", b.dataset.mode === mode));
   $("manual-card").hidden = mode !== "manual";
+  $("pid-card").hidden = mode !== "pid";
 
   const tbody = $("fans-table").querySelector("tbody");
   tbody.innerHTML = Object.entries(status.fans || {})
@@ -395,6 +397,8 @@ const S = {
   "s-stepdown": ["smoothing", "max_step_down"], "s-hold": ["smoothing", "down_hold_polls"],
   "s-etrig": ["emergency", "trigger_temp"], "s-eclear": ["emergency", "clear_temp"],
   "s-retention": ["history", "retention_days"],
+  "p-setpoint": ["pid", "setpoint"], "p-min": ["pid", "min_pct"], "p-max": ["pid", "max_pct"],
+  "p-kp": ["pid", "kp"], "p-ki": ["pid", "ki"], "p-kd": ["pid", "kd"],
 };
 
 function fillSettings() {
@@ -408,8 +412,9 @@ function fillSettings() {
   $("manual-value").textContent = `${config.manual_percent}%`;
 }
 
+$("pid-apply").addEventListener("click", () => $("settings-apply").click());
 $("settings-apply").addEventListener("click", async () => {
-  const patch = { temp_source: $("s-source").value, smoothing: {}, emergency: {}, history: {} };
+  const patch = { temp_source: $("s-source").value, smoothing: {}, emergency: {}, history: {}, pid: {} };
   for (const [id, path] of Object.entries(S)) {
     const v = +$(id).value;
     if (path.length === 1) patch[path[0]] = v;

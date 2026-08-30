@@ -15,6 +15,7 @@
   </div>
   <div class="mode-switch" id="mode-switch">
     <button data-mode="curve">Curve</button>
+    <button data-mode="pid">Smart</button>
     <button data-mode="manual">Manual</button>
     <button data-mode="dell">Dell Auto</button>
   </div>
@@ -30,6 +31,21 @@
     <div class="tile"><span class="tile-label">Fan output</span><span class="tile-value" id="t-fan">–</span><span class="tile-sub" id="t-fan-sub"></span></div>
     <div class="tile"><span class="tile-label">Fan speed</span><span class="tile-value" id="t-rpm">–</span><span class="tile-sub" id="t-rpm-sub"></span></div>
     <div class="tile"><span class="tile-label">Power</span><span class="tile-value" id="t-power">–</span><span class="tile-sub">system draw</span></div>
+  </section>
+
+  <section class="card" id="pid-card" hidden>
+    <div class="card-head"><h2>Smart target</h2><button class="btn primary" id="pid-apply">Apply</button></div>
+    <div class="settings-grid">
+      <label>Target CPU temp (°C)<input type="number" id="p-setpoint" min="40" max="95" step="0.5"></label>
+      <label>Min fan %<input type="number" id="p-min" min="0" max="100"></label>
+      <label>Max fan %<input type="number" id="p-max" min="0" max="100"></label>
+      <label>Kp (%/°C)<input type="number" id="p-kp" min="0" max="50" step="0.5"></label>
+      <label>Ki (%/°C·s)<input type="number" id="p-ki" min="0" max="2" step="0.005"></label>
+      <label>Kd (%/°C per s)<input type="number" id="p-kd" min="0" max="100" step="0.5"></label>
+    </div>
+    <p class="hint">Holds the CPUs at the target temperature with the least fan speed possible.
+    The integral term slowly drains while below target, so the fans settle at the quietest sustainable level.
+    The emergency handoff to Dell auto control stays active as a hard safety cap.</p>
   </section>
 
   <section class="card" id="manual-card" hidden>
@@ -78,9 +94,9 @@
         <button data-sec="604800">7d</button>
       </div>
     </div>
-    <div class="chart-panel"><h3>Temperatures (°C)</h3><canvas id="chart-temps" height="170"></canvas></div>
-    <div class="chart-panel"><h3>Fan output (%)</h3><canvas id="chart-fan" height="120"></canvas></div>
-    <div class="chart-panel"><h3>Power (W)</h3><canvas id="chart-power" height="100"></canvas></div>
+    <div class="chart-panel"><h3>Temperatures (°C)</h3><div class="chart-box" style="height:230px"><canvas id="chart-temps"></canvas></div></div>
+    <div class="chart-panel"><h3>Fan output (%)</h3><div class="chart-box" style="height:170px"><canvas id="chart-fan"></canvas></div></div>
+    <div class="chart-panel"><h3>Power (W)</h3><div class="chart-box" style="height:150px"><canvas id="chart-power"></canvas></div></div>
   </section>
 
   <div class="two-col">

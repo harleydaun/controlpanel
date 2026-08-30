@@ -13,7 +13,9 @@ Portainer — instead of on the Proxmox host itself.
 - **Web UI** (LAN-only, no auth): live temps, per-fan RPM, fan output %, power draw.
 - **Fan curve editor**: drag points, double-click to add, per-point numeric edit,
   Silent / Balanced / Cool presets.
-- **Three modes**: Curve (smart control), Manual (fixed %), Dell Auto (hands off).
+- **Four modes**: Curve, **Smart (PID)** — hold a target CPU temperature with the
+  minimum fan speed (the integral term drains while below target, so the fans
+  settle at the quietest sustainable level), Manual (fixed %), Dell Auto.
 - **The original quiet-first algorithm**, ported intact:
   - control temp = max(CPU1, CPU2) (or avg CPU / max of all sensors),
   - asymmetric EMA smoothing — rises track fast, falls track slow,

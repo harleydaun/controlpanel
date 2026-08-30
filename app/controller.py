@@ -50,6 +50,9 @@ class Controller:
         self.current_pct = None       # what we last commanded (None = not ours)
         self.smooth = None            # EMA of control temp
         self.down_count = 0
+        self.pid_i = 0.0              # PID integral term (in fan %)
+        self.pid_prev = None          # previous smoothed temp, for the D term
+        self.pid_ready = False        # False -> re-initialize bumplessly
         self.emergency = False
         self.degraded = False         # sensor reads failing -> Dell has control
         self.fail_count = 0
@@ -90,6 +93,7 @@ class Controller:
             "smooth_temp": round(self.smooth, 1) if self.smooth is not None else None,
             "fan_pct": self.current_pct,
             "target_pct": self.target_pct,
+            "pid_integral": round(self.pid_i, 1) if self.pid_ready else None,
             "third_party_disabled": self.third_party_disabled,
             "last_update": self.last_update,
             "last_error": self.last_error,
@@ -172,6 +176,7 @@ class Controller:
             self.log("info", f"Mode changed: {self.last_mode} -> {mode}")
             self.emergency = False
             self.down_count = 0
+            self.pid_ready = False
             if mode == "dell":
                 await self.ipmi.set_auto_control()
                 self.current_pct = None
@@ -185,6 +190,7 @@ class Controller:
             self.idrac_ok = True
             if self.degraded:
                 self.degraded = False
+                self.pid_ready = False
                 self.log("info", "Sensor reads recovered; resuming control")
                 if mode != "dell":
                     await self._set_pct(cfg["failsafe_percent"], "recovery baseline")
@@ -238,8 +244,13 @@ class Controller:
                     self.log("info",
                              f"Raw temp {raw_cpu_max}C cleared emergency; reclaiming control")
                     self.smooth = raw
-                    pct = (cfg["manual_percent"] if mode == "manual"
-                           else curve_target(cfg["curve"], raw))
+                    self.pid_ready = False
+                    if mode == "manual":
+                        pct = cfg["manual_percent"]
+                    elif mode == "pid":
+                        pct = cfg["failsafe_percent"]
+                    else:
+                        pct = curve_target(cfg["curve"], raw)
                     await self._set_pct(pct, "post-emergency")
             elif raw_cpu_max >= emerg["trigger_temp"]:
                 self.emergency = True
@@ -250,6 +261,8 @@ class Controller:
                 self.target_pct = cfg["manual_percent"]
                 if self.current_pct != cfg["manual_percent"]:
                     await self._set_pct(cfg["manual_percent"], "manual setting")
+            elif mode == "pid":
+                await self._pid_step(cfg, raw)
             else:
                 await self._curve_step(cfg, raw)
 
@@ -268,6 +281,64 @@ class Controller:
             rpm=sum(rpms) / len(rpms) if rpms else None,
             power=self.power, mode=mode,
             emergency=self.emergency or self.degraded)
+
+    async def _pid_step(self, cfg, raw):
+        """Hold pid.setpoint using the least fan possible.
+
+        PI(D) on the smoothed temperature. The integral term is what finds the
+        quietest sustainable fan level: while the CPU sits below the setpoint
+        it slowly drains, letting the fans creep down until the temperature
+        rises to meet the target. Anti-windup by back-calculation keeps the
+        integral honest at the output clamps. Output changes are slew-limited
+        with the same up/down rates as curve mode so decay stays silent.
+        """
+        p, s = cfg["pid"], cfg["smoothing"]
+        if self.smooth is None:
+            self.smooth = float(raw)
+        else:
+            alpha = s["alpha_up"] if raw > self.smooth else s["alpha_down"]
+            self.smooth += (raw - self.smooth) * alpha
+
+        dt = max(1, cfg["poll_interval"])
+        err = self.smooth - p["setpoint"]
+        d = 0.0
+        if self.pid_prev is not None and self.pid_ready:
+            d = p["kd"] * (self.smooth - self.pid_prev) / dt
+        self.pid_prev = self.smooth
+
+        if not self.pid_ready:
+            # bumpless start: pick the integral so output == current fan level
+            base = self.current_pct if self.current_pct is not None else cfg["failsafe_percent"]
+            self.pid_i = float(base) - p["kp"] * err
+            self.pid_ready = True
+            self.log("info", f"Smart mode engaged: target {p['setpoint']}C, "
+                             f"starting from {base}%")
+
+        self.pid_i += p["ki"] * err * dt
+        out = p["kp"] * err + self.pid_i + d
+        if out > p["max_pct"]:
+            self.pid_i -= out - p["max_pct"]
+            out = p["max_pct"]
+        elif out < p["min_pct"]:
+            self.pid_i += p["min_pct"] - out
+            out = p["min_pct"]
+
+        target = int(round(out))
+        self.target_pct = target
+        if self.current_pct is None:
+            await self._set_pct(target, "initial smart target")
+            return
+
+        step = target - self.current_pct
+        step = min(step, s["max_step_up"]) if step > 0 else max(step, -s["max_step_down"])
+        new_pct = self.current_pct + step
+        if new_pct != self.current_pct:
+            direction = "UP" if step > 0 else "DOWN"
+            old = self.current_pct
+            await self._set_pct(new_pct)
+            self.log("info",
+                     f"temp={raw}C smooth={self.smooth:.1f}C err={err:+.1f}C "
+                     f"pid={target}% {direction}: {old}% -> {new_pct}%")
 
     async def _curve_step(self, cfg, raw):
         s = cfg["smoothing"]
