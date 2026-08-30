@@ -365,7 +365,10 @@ function renderStatus() {
     $(id).className = "tile-value " + cls;
   };
   set("t-cpu", cpuMax, "°C", tempClass(cpuMax));
-  $("t-cpu-sub").textContent = cpus.map(([k, v]) => `${k.replace(" Temp", "")} ${v}°`).join(" · ");
+  const srcTag = status.temp_backend === "host" ? " · host sensors"
+    : (config && config.temp_api.enabled && status.temp_backend === "idrac" ? " · iDRAC fallback" : "");
+  $("t-cpu-sub").textContent =
+    cpus.map(([k, v]) => `${k.replace(" Temp", "")} ${v}°`).join(" · ") + srcTag;
   set("t-inlet", temps["Inlet Temp"], "°C");
   set("t-exhaust", temps["Exhaust Temp"], "°C");
 
@@ -505,13 +508,19 @@ function fillSettings() {
     $(id).value = v;
   }
   $("s-source").value = config.temp_source;
+  $("s-ext-on").checked = config.temp_api.enabled;
+  $("s-ext-url").value = config.temp_api.url;
   $("manual-slider").value = config.manual_percent;
   $("manual-value").textContent = `${config.manual_percent}%`;
 }
 
 $("pid-apply").addEventListener("click", () => $("settings-apply").click());
 $("settings-apply").addEventListener("click", async () => {
-  const patch = { temp_source: $("s-source").value, smoothing: {}, emergency: {}, history: {}, pid: {} };
+  const patch = {
+    temp_source: $("s-source").value,
+    temp_api: { enabled: $("s-ext-on").checked, url: $("s-ext-url").value.trim() },
+    smoothing: {}, emergency: {}, history: {}, pid: {},
+  };
   for (const [id, path] of Object.entries(S)) {
     const v = +$(id).value;
     if (path.length === 1) patch[path[0]] = v;

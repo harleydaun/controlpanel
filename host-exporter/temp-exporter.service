@@ -1,0 +1,16 @@
+[Unit]
+Description=CPU temperature exporter for R730xd fan control
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/temp-exporter.py
+Restart=always
+RestartSec=5s
+DynamicUser=yes
+ProtectSystem=strict
+ProtectHome=yes
+NoNewPrivileges=yes
+MemoryMax=32M
+
+[Install]
+WantedBy=multi-user.target

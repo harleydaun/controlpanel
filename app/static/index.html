@@ -126,6 +126,13 @@
       </div>
       <div class="settings-row">
         <label class="toggle-row">
+          <input type="checkbox" id="s-ext-on">
+          Use host temp exporter (falls back to iDRAC automatically)
+        </label>
+        <input type="text" id="s-ext-url" placeholder="http://proxmox-host:9333/" style="max-width:260px">
+      </div>
+      <div class="settings-row">
+        <label class="toggle-row">
           <input type="checkbox" id="s-thirdparty">
           Disable Dell's third-party PCIe card cooling response
         </label>

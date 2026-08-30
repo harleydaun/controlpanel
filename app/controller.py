@@ -17,7 +17,9 @@ Additions over the bash version:
   revert to auto while we think we're in control.
 """
 import asyncio
+import json
 import time
+import urllib.request
 
 from ipmi import IpmiError
 
@@ -59,6 +61,11 @@ class Controller:
         self.fail_count = 0
         self.last_mode = None
         self.last_assert = 0.0
+        self.ext_fail = 0             # consecutive host-exporter failures
+        self.temp_backend = None      # "host" | "idrac" — where control temps came from
+        self._ambient = {}            # inlet/exhaust from iDRAC when exporter is primary
+        self._last_telemetry = 0.0    # fans/power/ambient reads are capped at ~1/10s
+        self._last_sample = 0.0       # history writes are capped at ~1/10s
 
         # last readings for the API
         self.temps = {}
@@ -97,11 +104,26 @@ class Controller:
             "target_pct": self.target_pct,
             "pid_integral": round(self.pid_i, 1) if self.pid_ready else None,
             "pid_terms": self.pid_terms if (mode == "pid" and self.pid_ready) else None,
+            "temp_backend": self.temp_backend,
             "third_party_disabled": self.third_party_disabled,
             "last_update": self.last_update,
             "last_error": self.last_error,
             "uptime": int(time.time() - self._started),
         }
+
+    # -------------------------------------------------------- host temp source
+    async def _read_external(self, ta):
+        """Fetch temps from the host exporter. Raises on any problem."""
+        def fetch():
+            req = urllib.request.Request(ta["url"], headers={"Accept": "application/json"})
+            with urllib.request.urlopen(req, timeout=ta["timeout"]) as r:
+                return json.loads(r.read().decode())
+        data = await asyncio.get_running_loop().run_in_executor(None, fetch)
+        temps = {str(k): float(v) for k, v in data.get("temps", {}).items()
+                 if isinstance(v, (int, float)) and not isinstance(v, bool)}
+        if not any(k.startswith("CPU") for k in temps):
+            raise ValueError("no CPU temps in exporter response")
+        return temps
 
     # ------------------------------------------------------------ ipmi helpers
     async def _set_pct(self, pct, why=""):
@@ -187,54 +209,86 @@ class Controller:
                 await self._set_pct(cfg["failsafe_percent"], "mode change baseline")
         self.last_mode = mode
 
-        # ---- read sensors ----
-        try:
-            temps = await self.ipmi.read_temps()
-            self.idrac_ok = True
-            if self.degraded:
-                self.degraded = False
-                self.pid_ready = False
-                self.log("info", "Sensor reads recovered; resuming control")
-                if mode != "dell":
-                    await self._set_pct(cfg["failsafe_percent"], "recovery baseline")
-            self.fail_count = 0
-        except IpmiError as e:
-            self.fail_count += 1
-            self.log("warn", f"Temp read failed ({self.fail_count}): {e}")
-            if mode != "dell" and not self.degraded:
-                if self.fail_count >= READ_FAILURES_BEFORE_DELL:
-                    self.degraded = True
-                    await self._hand_to_dell("repeated sensor read failures")
-                else:
-                    try:
-                        await self._set_pct(cfg["failsafe_percent"], "sensor read failed")
-                        self.smooth = None
-                        self.down_count = 0
-                    except IpmiError as e2:
-                        self.log("error", f"Failsafe set failed: {e2}")
-            return
+        # ---- read control temperatures (host exporter first, iDRAC fallback) ----
+        ta = cfg["temp_api"]
+        temps = None
+        source = "idrac"
+        if ta["enabled"] and ta["url"]:
+            try:
+                temps = await self._read_external(ta)
+                source = "host"
+                if self.ext_fail:
+                    self.log("info", "Host temp source recovered")
+                self.ext_fail = 0
+            except Exception as e:
+                self.ext_fail += 1
+                if self.ext_fail <= 3 or self.ext_fail % 50 == 0:
+                    self.log("warn",
+                             f"Host temp source failed (x{self.ext_fail}), using iDRAC: {e}")
+        if temps is None:
+            try:
+                temps = await self.ipmi.read_temps()
+                self.idrac_ok = True
+            except IpmiError as e:
+                self.fail_count += 1
+                self.log("warn", f"Temp read failed ({self.fail_count}): {e}")
+                if mode != "dell" and not self.degraded:
+                    if self.fail_count >= READ_FAILURES_BEFORE_DELL:
+                        self.degraded = True
+                        await self._hand_to_dell("repeated sensor read failures")
+                    else:
+                        try:
+                            await self._set_pct(cfg["failsafe_percent"], "sensor read failed")
+                            self.smooth = None
+                            self.down_count = 0
+                        except IpmiError as e2:
+                            self.log("error", f"Failsafe set failed: {e2}")
+                return
 
-        self.temps = temps
+        self.temp_backend = source
+        self.fail_count = 0
+        if self.degraded:
+            self.degraded = False
+            self.pid_ready = False
+            self.log("info", "Sensor reads recovered; resuming control")
+            if mode != "dell":
+                await self._set_pct(cfg["failsafe_percent"], "recovery baseline")
+
+        # display temps: exporter only knows CPUs; keep iDRAC inlet/exhaust merged in
+        self.temps = {**self._ambient, **temps} if source == "host" else temps
         cpu = [v for k, v in temps.items() if k.startswith("CPU")]
-        source = cfg["temp_source"]
-        if source == "cpu_avg" and cpu:
+        tsrc = cfg["temp_source"]
+        if tsrc == "cpu_avg" and cpu:
             raw = sum(cpu) / len(cpu)
-        elif source == "all_max":
+        elif tsrc == "all_max":
             raw = max(temps.values())
         else:
             raw = max(cpu) if cpu else max(temps.values())
         self.control_temp = round(raw, 1)
         raw_cpu_max = max(cpu) if cpu else raw  # emergency always watches CPUs
 
-        # fans/power are best-effort telemetry
-        try:
-            self.fans = await self.ipmi.read_fans()
-        except IpmiError:
-            pass
-        try:
-            self.power = await self.ipmi.read_power()
-        except IpmiError:
-            pass
+        # fans/power/ambient are best-effort telemetry, capped at ~1 read per 10s
+        # so a fast poll interval doesn't hammer the iDRAC
+        now_ts = time.time()
+        if now_ts - self._last_telemetry >= 9.0:
+            self._last_telemetry = now_ts
+            try:
+                self.fans = await self.ipmi.read_fans()
+                self.idrac_ok = True
+            except IpmiError:
+                pass
+            try:
+                self.power = await self.ipmi.read_power()
+            except IpmiError:
+                pass
+            if source == "host":
+                try:
+                    idrac_temps = await self.ipmi.read_temps()
+                    self._ambient = {k: v for k, v in idrac_temps.items()
+                                     if not k.startswith("CPU")}
+                    self.temps = {**self._ambient, **temps}
+                except IpmiError:
+                    pass
 
         emerg = cfg["emergency"]
         if mode == "dell" or self.degraded:
@@ -275,15 +329,17 @@ class Controller:
                 await self._set_pct(self.current_pct)
 
         self.last_update = int(time.time())
-        rpms = list(self.fans.values())
-        self.history.add_sample(
-            control=self.control_temp,
-            cpu1=temps.get("CPU1 Temp"), cpu2=temps.get("CPU2 Temp"),
-            inlet=temps.get("Inlet Temp"), exhaust=temps.get("Exhaust Temp"),
-            fan_pct=self.current_pct, target_pct=self.target_pct,
-            rpm=sum(rpms) / len(rpms) if rpms else None,
-            power=self.power, mode=mode,
-            emergency=self.emergency or self.degraded)
+        if now_ts - self._last_sample >= 9.0:
+            self._last_sample = now_ts
+            rpms = list(self.fans.values())
+            self.history.add_sample(
+                control=self.control_temp,
+                cpu1=self.temps.get("CPU1 Temp"), cpu2=self.temps.get("CPU2 Temp"),
+                inlet=self.temps.get("Inlet Temp"), exhaust=self.temps.get("Exhaust Temp"),
+                fan_pct=self.current_pct, target_pct=self.target_pct,
+                rpm=sum(rpms) / len(rpms) if rpms else None,
+                power=self.power, mode=mode,
+                emergency=self.emergency or self.degraded)
 
     async def _pid_step(self, cfg, raw):
         """Hold pid.setpoint using the least fan possible.

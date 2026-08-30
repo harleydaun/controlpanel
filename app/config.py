@@ -17,6 +17,11 @@ DEFAULT_CONFIG = {
     "failsafe_percent": 40,
     "reassert_interval": 60,      # re-send fan command this often even if unchanged
     "temp_source": "cpu_max",     # cpu_max | cpu_avg | all_max
+    "temp_api": {                 # optional fast temp source (host exporter);
+        "enabled": False,         # iDRAC remains the automatic fallback
+        "url": "",                # e.g. http://192.168.1.10:9333/
+        "timeout": 2.0,
+    },
     "curve": [
         {"temp": 55, "pct": 12},
         {"temp": 65, "pct": 16},
@@ -99,6 +104,17 @@ def validate(cfg):
     s["max_step_down"] = int(_num(s.get("max_step_down"), 1, 100, "max_step_down"))
     s["down_hold_polls"] = int(_num(s.get("down_hold_polls"), 0, 120, "down_hold_polls"))
     c["smoothing"] = s
+
+    ta = c.get("temp_api", {})
+    ta["enabled"] = bool(ta.get("enabled", False))
+    url = ta.get("url", "")
+    if not isinstance(url, str) or len(url) > 300:
+        raise ValueError("temp_api url must be a string under 300 chars")
+    if ta["enabled"] and not url.startswith(("http://", "https://")):
+        raise ValueError("temp_api url must start with http:// or https://")
+    ta["url"] = url.strip()
+    ta["timeout"] = round(float(_num(ta.get("timeout", 2.0), 0.5, 10, "temp_api timeout")), 1)
+    c["temp_api"] = ta
 
     p = c.get("pid", {})
     p["setpoint"] = round(float(_num(p.get("setpoint"), 40, 95, "pid setpoint")), 1)

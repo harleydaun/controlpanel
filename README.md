@@ -44,6 +44,30 @@ Enable IPMI over LAN on the iDRAC (off by default):
 
 The container only needs to reach the iDRAC's IP on UDP 623.
 
+## Optional: fast host temperature source
+
+Proxmox cannot expose host sensors to a VM natively, and every iDRAC lanplus
+call costs 0.5–2s. For a genuinely fast control loop (2–5s polls), run the
+tiny exporter in `host-exporter/` on the Proxmox host — it serves the real
+coretemp package temps over HTTP in ~5ms:
+
+```sh
+cp host-exporter/temp-exporter.py /usr/local/bin/ && chmod +x /usr/local/bin/temp-exporter.py
+cp host-exporter/temp-exporter.service /etc/systemd/system/
+systemctl enable --now temp-exporter
+curl http://localhost:9333/   # sanity check
+```
+
+Then in the web UI enable *Use host temp exporter* and set the URL
+(`http://<proxmox-ip>:9333/`). The controller prefers the exporter and
+**falls back to the iDRAC automatically** if it stops responding, so safety
+never depends on it. With the exporter active, the iDRAC is only used for
+fan commands plus fans/power/ambient telemetry (throttled to one read per
+10s regardless of poll interval).
+
+Note: DTS package temps read ~3–8°C higher than the iDRAC socket sensors —
+nudge your Smart target / curve up accordingly after switching.
+
 ## Deploy with Portainer
 
 **Option A — build from this repository (recommended).** Push this directory to
