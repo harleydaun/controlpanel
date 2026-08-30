@@ -51,6 +51,7 @@ DEFAULT_CONFIG = {
         "max_pct": 100,
     },
     "history": {"retention_days": 14},
+    "drives": {"warn_temp": 45},  # display-only threshold; never drives control
     "profiles": {},               # name -> {curve, smoothing}
 }
 
@@ -137,6 +138,10 @@ def validate(cfg):
     h = c.get("history", {})
     h["retention_days"] = int(_num(h.get("retention_days"), 1, 365, "retention_days"))
     c["history"] = h
+
+    d = c.get("drives", {})
+    d["warn_temp"] = int(_num(d.get("warn_temp", 45), 25, 70, "drive warn_temp"))
+    c["drives"] = d
 
     profiles = c.get("profiles", {})
     if not isinstance(profiles, dict):

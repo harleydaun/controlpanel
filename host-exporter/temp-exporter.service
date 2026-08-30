@@ -1,16 +1,18 @@
 [Unit]
-Description=CPU temperature exporter for R730xd fan control
+Description=CPU + drive temperature exporter for R730xd fan control
 After=network.target
 
+# Runs as root: smartctl needs raw access to /dev/sdX for drive temps.
+# (Install smartmontools on the host. If you only want CPU temps, you can
+# add DynamicUser=yes and drives will simply report empty.)
 [Service]
 ExecStart=/usr/local/bin/temp-exporter.py
 Restart=always
 RestartSec=5s
-DynamicUser=yes
 ProtectSystem=strict
 ProtectHome=yes
 NoNewPrivileges=yes
-MemoryMax=32M
+MemoryMax=48M
 
 [Install]
 WantedBy=multi-user.target

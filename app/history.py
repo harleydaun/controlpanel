@@ -27,6 +27,9 @@ class History:
                 );
                 CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
             """)
+            cols = [r[1] for r in self._db.execute("PRAGMA table_info(samples)")]
+            if "drive_max" not in cols:  # migration for pre-drive-temp databases
+                self._db.execute("ALTER TABLE samples ADD COLUMN drive_max REAL")
             self._db.commit()
 
     def add_sample(self, **kw):
@@ -34,12 +37,13 @@ class History:
             self._db.execute(
                 """INSERT INTO samples
                    (ts, control, cpu1, cpu2, inlet, exhaust, fan_pct,
-                    target_pct, rpm, power, mode, emergency)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    target_pct, rpm, power, mode, emergency, drive_max)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (int(time.time()), kw.get("control"), kw.get("cpu1"),
                  kw.get("cpu2"), kw.get("inlet"), kw.get("exhaust"),
                  kw.get("fan_pct"), kw.get("target_pct"), kw.get("rpm"),
-                 kw.get("power"), kw.get("mode"), int(kw.get("emergency", 0))))
+                 kw.get("power"), kw.get("mode"), int(kw.get("emergency", 0)),
+                 kw.get("drive_max")))
             self._db.commit()
 
     def add_event(self, level, message):
@@ -56,11 +60,11 @@ class History:
                 """SELECT (ts/?)*? AS t,
                           avg(control), avg(cpu1), avg(cpu2), avg(inlet),
                           avg(exhaust), avg(fan_pct), avg(target_pct),
-                          avg(rpm), avg(power), max(emergency)
+                          avg(rpm), avg(power), max(emergency), avg(drive_max)
                    FROM samples WHERE ts >= ? GROUP BY t ORDER BY t""",
                 (bucket, bucket, since)).fetchall()
         keys = ("ts", "control", "cpu1", "cpu2", "inlet", "exhaust",
-                "fan_pct", "target_pct", "rpm", "power", "emergency")
+                "fan_pct", "target_pct", "rpm", "power", "emergency", "drive_max")
         return [dict(zip(keys, r)) for r in rows]
 
     def events(self, limit=200):

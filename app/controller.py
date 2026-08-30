@@ -72,6 +72,7 @@ class Controller:
 
         # last readings for the API
         self.temps = {}
+        self.drives = {}              # drive temps from the exporter: display only
         self.fans = {}
         self.power = None
         self.control_temp = None
@@ -108,6 +109,7 @@ class Controller:
             "pid_integral": round(self.pid_i, 1) if self.pid_ready else None,
             "pid_terms": self.pid_terms if (mode == "pid" and self.pid_ready) else None,
             "temp_backend": self.temp_backend,
+            "drives": self.drives,
             "third_party_disabled": self.third_party_disabled,
             "last_update": self.last_update,
             "last_error": self.last_error,
@@ -122,11 +124,13 @@ class Controller:
             with urllib.request.urlopen(req, timeout=ta["timeout"]) as r:
                 return json.loads(r.read().decode())
         data = await asyncio.get_running_loop().run_in_executor(None, fetch)
-        temps = {str(k): float(v) for k, v in data.get("temps", {}).items()
-                 if isinstance(v, (int, float)) and not isinstance(v, bool)}
+        def clean(d):
+            return {str(k): float(v) for k, v in d.items()
+                    if isinstance(v, (int, float)) and not isinstance(v, bool)}
+        temps = clean(data.get("temps", {}))
         if not any(k.startswith("CPU") for k in temps):
             raise ValueError("no CPU temps in exporter response")
-        return temps
+        return temps, clean(data.get("drives", {}))
 
     # ------------------------------------------------------------ ipmi helpers
     async def _set_pct(self, pct, why=""):
@@ -287,13 +291,15 @@ class Controller:
         source = "idrac"
         if ta["enabled"] and ta["url"]:
             try:
-                temps = await self._read_external(ta)
+                temps, self.drives = await self._read_external(ta)
                 source = "host"
                 if self.ext_fail:
                     self.log("info", "Host temp source recovered")
                 self.ext_fail = 0
             except Exception as e:
                 self.ext_fail += 1
+                if self.ext_fail >= 3:
+                    self.drives = {}  # don't display stale drive temps
                 if self.ext_fail <= 3 or self.ext_fail % 50 == 0:
                     self.log("warn",
                              f"Host temp source failed (x{self.ext_fail}), using iDRAC: {e}")
@@ -387,7 +393,8 @@ class Controller:
                 fan_pct=self.current_pct, target_pct=self.target_pct,
                 rpm=sum(rpms) / len(rpms) if rpms else None,
                 power=self.power, mode=mode,
-                emergency=self.emergency or self.degraded)
+                emergency=self.emergency or self.degraded,
+                drive_max=max(self.drives.values()) if self.drives else None)
 
     async def _pid_step(self, cfg, raw):
         """Hold pid.setpoint using the least fan possible.

@@ -33,6 +33,9 @@ Portainer — instead of on the Proxmox host itself.
 - **Profiles**: save/load named curve+smoothing sets.
 - **Third-party PCIe cooling response toggle** (the Dell "ramp fans because of an
   unknown PCIe card" behavior).
+- **Drive temperature monitoring** (display-only, never drives control): per-drive
+  grid with a configurable warning setpoint and a "hottest drive" history chart.
+  Requires the host exporter with `smartmontools` installed on the Proxmox host.
 - **Event log** of every controller decision.
 
 ## Prerequisites — one-time iDRAC setup

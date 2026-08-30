@@ -302,6 +302,13 @@ const chPower = lineChart("chart-power", [
   { label: "Power", borderColor: COLORS.power, data: [] },
 ], { yMin: 0, unit: " W", legend: false });
 
+const chDrives = lineChart("chart-drives", [
+  { label: "Hottest drive", borderColor: "#d55181", data: [] },   // slot 5 magenta
+  { label: "Warn setpoint", borderColor: "#fab219", borderDash: [6, 5], data: [], pointRadius: 0, pointHoverRadius: 0 },
+], { unit: "°C", legend: true });
+chDrives.options.scales.y.suggestedMin = 28;
+chDrives.options.scales.y.suggestedMax = 50;
+
 async function loadHistory() {
   try {
     const rows = await api(`/api/history?seconds=${historyRange}&points=400`);
@@ -313,7 +320,14 @@ async function loadHistory() {
     chFan.data.datasets[1].data = pick("target_pct");
     chPower.data.datasets[0].data = pick("power");
     const now = Math.floor(Date.now() / 1000);
-    [chTemps, chFan, chPower].forEach(c => {
+    const driveData = pick("drive_max").filter(p => p.y != null);
+    const haveDrives = driveData.length > 0 || (status && Object.keys(status.drives || {}).length);
+    $("drive-chart-panel").hidden = !haveDrives;
+    chDrives.data.datasets[0].data = pick("drive_max");
+    const warn = config ? config.drives.warn_temp : null;
+    chDrives.data.datasets[1].data = warn != null
+      ? [{ x: now - historyRange, y: warn }, { x: now, y: warn }] : [];
+    [chTemps, chFan, chPower, chDrives].forEach(c => {
       c.options.scales.x.min = now - historyRange;
       c.options.scales.x.max = now;
       c.update("none");
@@ -391,6 +405,22 @@ function renderStatus() {
     b.classList.toggle("active", b.dataset.mode === mode));
   $("manual-card").hidden = mode !== "manual";
   $("pid-card").hidden = mode !== "pid";
+
+  const drives = status.drives || {};
+  const driveNames = Object.keys(drives).sort();
+  $("drives-section").hidden = !driveNames.length;
+  if (driveNames.length && config) {
+    const warn = config.drives.warn_temp;
+    const hot = driveNames.filter(n => drives[n] >= warn).length;
+    $("drives-hint").textContent = hot
+      ? `⚠ ${hot} at/above ${warn}°C` : `all below ${warn}°C`;
+    $("drive-grid").innerHTML = driveNames.map(n => {
+      const w = drives[n] >= warn;
+      return `<div class="drive-chip${w ? " warn" : ""}">
+        <span class="dn">${n.replace(/</g, "&lt;")}</span>
+        <span class="dt">${w ? "⚠ " : ""}${Math.round(drives[n])}°</span></div>`;
+    }).join("");
+  }
 
   const tbody = $("fans-table").querySelector("tbody");
   tbody.innerHTML = Object.entries(status.fans || {})
@@ -497,6 +527,7 @@ const S = {
   "s-stepdown": ["smoothing", "max_step_down"], "s-hold": ["smoothing", "down_hold_polls"],
   "s-etrig": ["emergency", "trigger_temp"], "s-eclear": ["emergency", "clear_temp"],
   "s-retention": ["history", "retention_days"],
+  "s-drivewarn": ["drives", "warn_temp"],
   "p-setpoint": ["pid", "setpoint"], "p-min": ["pid", "min_pct"], "p-max": ["pid", "max_pct"],
   "p-kp": ["pid", "kp"], "p-ki": ["pid", "ki"], "p-kd": ["pid", "kd"],
 };
@@ -519,7 +550,7 @@ $("settings-apply").addEventListener("click", async () => {
   const patch = {
     temp_source: $("s-source").value,
     temp_api: { enabled: $("s-ext-on").checked, url: $("s-ext-url").value.trim() },
-    smoothing: {}, emergency: {}, history: {}, pid: {},
+    smoothing: {}, emergency: {}, history: {}, pid: {}, drives: {},
   };
   for (const [id, path] of Object.entries(S)) {
     const v = +$(id).value;

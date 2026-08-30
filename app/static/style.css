@@ -149,6 +149,18 @@ input[type="number"], input[type="text"], select {
 .fans-table td { padding: 4px 6px; border-bottom: 1px solid var(--grid); color: var(--ink-2); font-size: 13px; }
 .fans-table td:last-child { text-align: right; color: var(--ink); }
 
+/* drive temp chips — warning state pairs color with the ⚠ icon, never color alone */
+.drive-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap: 8px; margin-top: 8px; }
+.drive-chip {
+  background: var(--page); border: 1px solid var(--border); border-radius: 8px;
+  padding: 6px 10px; display: flex; justify-content: space-between; gap: 6px;
+  font-size: 12.5px;
+}
+.drive-chip .dn { color: var(--muted); }
+.drive-chip .dt { font-variant-numeric: tabular-nums; color: var(--ink-2); }
+.drive-chip.warn { border-color: rgba(250, 178, 25, 0.6); }
+.drive-chip.warn .dt { color: var(--status-warn); font-weight: 600; }
+
 /* events */
 .events-wrap { max-height: 320px; overflow-y: auto; margin-top: 10px; }
 .events-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
