@@ -64,8 +64,11 @@ class Controller:
         self.ext_fail = 0             # consecutive host-exporter failures
         self.temp_backend = None      # "host" | "idrac" — where control temps came from
         self._ambient = {}            # inlet/exhaust from iDRAC when exporter is primary
-        self._last_telemetry = 0.0    # fans/power/ambient reads are capped at ~1/10s
         self._last_sample = 0.0       # history writes are capped at ~1/10s
+        self.manual_ctl = False       # True once "enable manual control" was sent
+        self.pid_last_ts = None       # monotonic time of last PID step (real dt)
+        self._write_target = None     # latest fan % awaiting an IPMI write
+        self._write_task = None       # background writer task
 
         # last readings for the API
         self.temps = {}
@@ -127,21 +130,54 @@ class Controller:
 
     # ------------------------------------------------------------ ipmi helpers
     async def _set_pct(self, pct, why=""):
+        """Command a fan speed. The IPMI write happens in a background task so
+        the control loop never blocks on lanplus latency; rapid successive
+        targets coalesce to the latest value. State is updated optimistically —
+        the writer logs (and forces a re-assert) if the write actually fails."""
         pct = max(0, min(100, int(pct)))
-        await self.ipmi.set_fan_percent(pct)
         self.current_pct = pct
         self.last_assert = time.time()
+        self._write_target = pct
+        if self._write_task is None or self._write_task.done():
+            self._write_task = asyncio.create_task(self._write_loop())
         if why:
             self.log("info", f"Fan -> {pct}% ({why})")
 
+    async def _write_loop(self):
+        while self._write_target is not None:
+            pct = self._write_target
+            self._write_target = None
+            try:
+                if not self.manual_ctl:
+                    await self.ipmi.set_manual_control()
+                    self.manual_ctl = True
+                await self.ipmi.set_fan_percent(pct)
+            except IpmiError as e:
+                self.manual_ctl = False  # iDRAC state unknown; re-enable next write
+                self.idrac_ok = False
+                self.log("error", f"Fan write {pct}% failed: {e}")
+
+    async def _flush_writes(self):
+        """Discard any queued target and wait for the in-flight write."""
+        self._write_target = None
+        if self._write_task is not None and not self._write_task.done():
+            try:
+                await self._write_task
+            except Exception:
+                pass
+
     async def _hand_to_dell(self, why):
+        await self._flush_writes()
         try:
+            if not self.manual_ctl:
+                await self.ipmi.set_manual_control()
             await self.ipmi.set_fan_percent(self.store.get()["failsafe_percent"])
             await asyncio.sleep(1)
             await self.ipmi.set_auto_control()
             self.log("warn", f"Handed control to Dell auto ({why})")
         except IpmiError as e:
             self.log("error", f"Failed handing to Dell auto: {e}")
+        self.manual_ctl = False
         self.current_pct = None
         self.smooth = None
         self.down_count = 0
@@ -166,32 +202,66 @@ class Controller:
         except Exception:
             pass
 
+        telemetry = asyncio.create_task(self._telemetry_loop())
+        try:
+            while not self._stop:
+                cfg = self.store.get()
+                t0 = time.monotonic()
+                try:
+                    await self._tick(cfg)
+                    self.last_error = None
+                except IpmiError as e:
+                    self.idrac_ok = False
+                    self.last_error = str(e)
+                    self.log("error", f"IPMI error: {e}")
+                except Exception as e:  # never let the loop die
+                    self.last_error = repr(e)
+                    self.log("error", f"Controller error: {e!r}")
+
+                now = time.time()
+                if now - self._last_prune > 3600:
+                    self._last_prune = now
+                    try:
+                        self.history.prune(cfg["history"]["retention_days"])
+                    except Exception:
+                        pass
+
+                # fixed-rate loop: sleep whatever remains of the poll period
+                elapsed = time.monotonic() - t0
+                try:
+                    await asyncio.wait_for(self.wake.wait(),
+                                           timeout=max(0.3, cfg["poll_interval"] - elapsed))
+                except asyncio.TimeoutError:
+                    pass
+                self.wake.clear()
+        finally:
+            telemetry.cancel()
+
+    async def _telemetry_loop(self):
+        """Fans/power/ambient off the control path: one iDRAC pass every 10s.
+        The IPMI lock serializes these with fan writes, so a control write
+        waits at most one in-flight call, never the whole batch."""
         while not self._stop:
             cfg = self.store.get()
             try:
-                await self._tick(cfg)
-                self.last_error = None
-            except IpmiError as e:
-                self.idrac_ok = False
-                self.last_error = str(e)
-                self.log("error", f"IPMI error: {e}")
-            except Exception as e:  # never let the loop die
-                self.last_error = repr(e)
-                self.log("error", f"Controller error: {e!r}")
-
-            now = time.time()
-            if now - self._last_prune > 3600:
-                self._last_prune = now
-                try:
-                    self.history.prune(cfg["history"]["retention_days"])
-                except Exception:
-                    pass
-
-            try:
-                await asyncio.wait_for(self.wake.wait(), timeout=cfg["poll_interval"])
-            except asyncio.TimeoutError:
+                self.fans = await self.ipmi.read_fans()
+                self.idrac_ok = True
+            except IpmiError:
                 pass
-            self.wake.clear()
+            except Exception as e:
+                self.log("error", f"Telemetry error: {e!r}")
+            try:
+                self.power = await self.ipmi.read_power()
+            except IpmiError:
+                pass
+            if cfg["temp_api"]["enabled"]:
+                try:
+                    idrac_temps = await self.ipmi.read_temps()
+                    self._ambient = {k: v for k, v in idrac_temps.items()
+                                     if not k.startswith("CPU")}
+                except IpmiError:
+                    pass
+            await asyncio.sleep(10)
 
     async def _tick(self, cfg):
         mode = cfg["mode"]
@@ -203,7 +273,9 @@ class Controller:
             self.down_count = 0
             self.pid_ready = False
             if mode == "dell":
+                await self._flush_writes()
                 await self.ipmi.set_auto_control()
+                self.manual_ctl = False
                 self.current_pct = None
             else:
                 await self._set_pct(cfg["failsafe_percent"], "mode change baseline")
@@ -237,12 +309,9 @@ class Controller:
                         self.degraded = True
                         await self._hand_to_dell("repeated sensor read failures")
                     else:
-                        try:
-                            await self._set_pct(cfg["failsafe_percent"], "sensor read failed")
-                            self.smooth = None
-                            self.down_count = 0
-                        except IpmiError as e2:
-                            self.log("error", f"Failsafe set failed: {e2}")
+                        await self._set_pct(cfg["failsafe_percent"], "sensor read failed")
+                        self.smooth = None
+                        self.down_count = 0
                 return
 
         self.temp_backend = source
@@ -266,29 +335,6 @@ class Controller:
             raw = max(cpu) if cpu else max(temps.values())
         self.control_temp = round(raw, 1)
         raw_cpu_max = max(cpu) if cpu else raw  # emergency always watches CPUs
-
-        # fans/power/ambient are best-effort telemetry, capped at ~1 read per 10s
-        # so a fast poll interval doesn't hammer the iDRAC
-        now_ts = time.time()
-        if now_ts - self._last_telemetry >= 9.0:
-            self._last_telemetry = now_ts
-            try:
-                self.fans = await self.ipmi.read_fans()
-                self.idrac_ok = True
-            except IpmiError:
-                pass
-            try:
-                self.power = await self.ipmi.read_power()
-            except IpmiError:
-                pass
-            if source == "host":
-                try:
-                    idrac_temps = await self.ipmi.read_temps()
-                    self._ambient = {k: v for k, v in idrac_temps.items()
-                                     if not k.startswith("CPU")}
-                    self.temps = {**self._ambient, **temps}
-                except IpmiError:
-                    pass
 
         emerg = cfg["emergency"]
         if mode == "dell" or self.degraded:
@@ -323,12 +369,14 @@ class Controller:
             else:
                 await self._curve_step(cfg, raw)
 
-            # reassert the command periodically in case the iDRAC was reset
+            # reassert both commands periodically in case the iDRAC was reset
             if (not self.emergency and self.current_pct is not None
                     and time.time() - self.last_assert >= cfg["reassert_interval"]):
+                self.manual_ctl = False  # force the manual-control command too
                 await self._set_pct(self.current_pct)
 
         self.last_update = int(time.time())
+        now_ts = time.time()
         if now_ts - self._last_sample >= 9.0:
             self._last_sample = now_ts
             rpms = list(self.fans.values())
@@ -358,7 +406,14 @@ class Controller:
             alpha = s["alpha_up"] if raw > self.smooth else s["alpha_down"]
             self.smooth += (raw - self.smooth) * alpha
 
-        dt = max(1, cfg["poll_interval"])
+        # integrate over real elapsed time, not the configured interval — the
+        # loop can run slower than poll_interval when the iDRAC is sluggish
+        now_m = time.monotonic()
+        if self.pid_ready and self.pid_last_ts is not None:
+            dt = min(max(now_m - self.pid_last_ts, 0.5), 60.0)
+        else:
+            dt = float(cfg["poll_interval"])
+        self.pid_last_ts = now_m
         err = self.smooth - p["setpoint"]
         d = 0.0
         if self.pid_prev is not None and self.pid_ready:
@@ -445,9 +500,12 @@ class Controller:
     async def shutdown(self):
         self._stop = True
         self.wake.set()
+        await self._flush_writes()
         cfg = self.store.get()
         self.log("info", "Shutting down: failsafe then Dell auto control")
         try:
+            if not self.manual_ctl:
+                await self.ipmi.set_manual_control()
             await self.ipmi.set_fan_percent(cfg["failsafe_percent"])
             await asyncio.sleep(1)
             await self.ipmi.set_auto_control()

@@ -110,8 +110,10 @@ class Ipmi:
         await self._run("raw", "0x30", "0x30", "0x01", "0x01")
 
     async def set_fan_percent(self, pct):
+        """Write the fan speed. Caller must ensure manual control is enabled
+        (the controller tracks that state to avoid a redundant lanplus call
+        on every write)."""
         pct = max(0, min(100, int(pct)))
-        await self.set_manual_control()
         await self._run("raw", "0x30", "0x30", "0x02", "0xff", f"0x{pct:02x}")
 
     async def get_third_party_response(self):
@@ -144,6 +146,12 @@ class MockIpmi(Ipmi):
         self._third_party_disabled = False
         self._cpu = 55.0
         self._last = time.time()
+        # simulate lanplus latency per call, for loop-timing tests
+        self._latency = float(os.environ.get("MOCK_IPMI_LATENCY", "0"))
+
+    async def _lat(self):
+        if self._latency:
+            await asyncio.sleep(self._latency)
 
     def _wave(self, base, amp, period, phase=0.0):
         return base + amp * math.sin((time.time() - self._t0) / period + phase)
@@ -154,6 +162,7 @@ class MockIpmi(Ipmi):
     async def read_temps(self):
         # First-order thermal model that responds to fan speed, so closed-loop
         # control (PID) actually converges in mock mode.
+        await self._lat()
         now = time.time()
         dt = min(now - self._last, 60.0)
         self._last = now
@@ -168,20 +177,24 @@ class MockIpmi(Ipmi):
         }
 
     async def read_fans(self):
+        await self._lat()
         rpm = 2000 + self._pct * 140
         return {f"Fan{i}": int(rpm + self._wave(0, 60, 20, i)) for i in range(1, 7)}
 
     async def read_power(self):
+        await self._lat()
         return round(self._wave(160, 40, 300))
 
     async def set_manual_control(self):
+        await self._lat()
         self._manual = True
 
     async def set_auto_control(self):
+        await self._lat()
         self._manual = False
 
     async def set_fan_percent(self, pct):
-        self._manual = True
+        await self._lat()
         self._pct = max(0, min(100, int(pct)))
 
     async def get_third_party_response(self):
