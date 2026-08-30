@@ -7,6 +7,7 @@ service: because it talks to the iDRAC over the network (IPMI-over-LAN /
 Portainer — instead of on the Proxmox host itself.
 
 ![stack](docs/screenshot.png)
+![smart mode](docs/screenshot-smart.png)
 
 ## Features
 

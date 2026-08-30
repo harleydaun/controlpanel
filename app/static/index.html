@@ -60,7 +60,7 @@
 
   <section class="card">
     <div class="card-head">
-      <h2>Fan curve</h2>
+      <h2 id="curve-title">Fan curve</h2>
       <div class="head-actions">
         <select id="preset-select">
           <option value="">Presets…</option>
@@ -73,6 +73,7 @@
       </div>
     </div>
     <div id="curve-editor"></div>
+    <div id="pid-readout" class="pid-readout hidden"></div>
     <div class="curve-toolbar">
       <div id="point-edit" class="point-edit hidden">
         <label>Temp <input type="number" id="pt-temp" min="0" max="120" step="0.5">°C</label>

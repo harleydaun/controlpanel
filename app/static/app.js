@@ -17,6 +17,8 @@ const PRESETS = {
 let config = null;          // last config from server
 let status = null;          // last status from server
 let historyRange = 3600;
+const pidTrail = [];        // recent (smooth temp, fan %) points in Smart mode
+let pidTrailTs = 0;
 
 const $ = (id) => document.getElementById(id);
 
@@ -92,6 +94,36 @@ const curve = (() => {
           fill="${COLORS.cpu}" stroke="#1a1a19" stroke-width="2"/>
       </g>`).join("");
 
+    // Smart (PID) mode overlay: setpoint, clamps, emergency zone, trajectory
+    const pidMode = status && status.mode === "pid" && config;
+    let overlay = "";
+    if (pidMode) {
+      const pt = status.pid_terms || {};
+      const cl = (v) => Math.max(X0, Math.min(X1, v));
+      const trig = config.emergency.trigger_temp;
+      if (trig <= X1)
+        overlay += `
+          <rect x="${sx(cl(trig))}" y="${M.t}" width="${sx(X1) - sx(cl(trig))}" height="${H - M.b - M.t}" fill="#d03b3b" opacity="0.07"/>
+          <line x1="${sx(cl(trig))}" y1="${M.t}" x2="${sx(cl(trig))}" y2="${H - M.b}" stroke="#d03b3b" stroke-dasharray="2 3" opacity="0.6"/>
+          <text x="${sx(cl(trig)) + 6}" y="${H - M.b - 8}" fill="#d03b3b" font-size="10">emergency ${trig}°</text>`;
+      const sp = pt.setpoint != null ? pt.setpoint : config.pid.setpoint;
+      overlay += `
+        <line x1="${sx(cl(sp))}" y1="${M.t}" x2="${sx(cl(sp))}" y2="${H - M.b}" stroke="${COLORS.fan}" stroke-width="1.5"/>
+        <text x="${sx(cl(sp)) - 6}" y="${M.t + 12}" fill="${COLORS.fan}" font-size="11" text-anchor="end">target ${sp}°C</text>`;
+      const lo = pt.min_pct != null ? pt.min_pct : config.pid.min_pct;
+      const hi = pt.max_pct != null ? pt.max_pct : config.pid.max_pct;
+      overlay += `
+        <line x1="${M.l}" y1="${sy(lo)}" x2="${W - M.r}" y2="${sy(lo)}" stroke="${COLORS.fan}" stroke-dasharray="4 4" opacity="0.45"/>
+        <text x="${W - M.r - 4}" y="${sy(lo) - 4}" fill="${COLORS.fan}" font-size="10" text-anchor="end" opacity="0.8">min fan ${lo}%</text>`;
+      if (hi < 100)
+        overlay += `
+          <line x1="${M.l}" y1="${sy(hi)}" x2="${W - M.r}" y2="${sy(hi)}" stroke="${COLORS.fan}" stroke-dasharray="4 4" opacity="0.45"/>
+          <text x="${W - M.r - 4}" y="${sy(hi) - 4}" fill="${COLORS.fan}" font-size="10" text-anchor="end" opacity="0.8">max fan ${hi}%</text>`;
+      if (pidTrail.length > 1)
+        overlay += `<polyline points="${pidTrail.map(q => `${sx(cl(q.t))},${sy(q.f)}`).join(" ")}"
+          fill="none" stroke="${COLORS.fan}" stroke-width="1.5" opacity="0.55"/>`;
+    }
+
     // live operating marker: smoothed temp vs actual commanded fan %
     let marker = "";
     if (status && status.smooth_temp != null && status.fan_pct != null) {
@@ -101,7 +133,7 @@ const curve = (() => {
           stroke="${COLORS.inlet}" stroke-dasharray="3 4" opacity="0.7"/>
         <circle cx="${sx(mxr)}" cy="${sy(status.fan_pct)}" r="6" fill="${COLORS.inlet}"
           stroke="#1a1a19" stroke-width="2"/>
-        <text x="${sx(mxr) + 8}" y="${M.t + 12}" fill="${COLORS.inlet}" font-size="11">
+        <text x="${sx(mxr) + 8}" y="${M.t + (pidMode ? 28 : 12)}" fill="${COLORS.inlet}" font-size="11">
           now ${status.smooth_temp}°C · ${status.fan_pct}%</text>`;
     }
 
@@ -109,8 +141,12 @@ const curve = (() => {
       <svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg">
         ${grid.join("")}
         <line x1="${M.l}" y1="${H - M.b}" x2="${W - M.r}" y2="${H - M.b}" stroke="${COLORS.baseline}"/>
-        <path d="${path}" fill="none" stroke="${COLORS.cpu}" stroke-width="2.5"/>
-        ${marker}${dots}
+        ${overlay}
+        <g opacity="${pidMode ? 0.3 : 1}">
+          <path d="${path}" fill="none" stroke="${COLORS.cpu}" stroke-width="2.5"/>
+          ${dots}
+        </g>
+        ${marker}
       </svg>`;
     svg = el.querySelector("svg");
     bindSvg();
@@ -361,7 +397,68 @@ function renderStatus() {
   if ($("s-thirdparty").dataset.userTouched !== "1" && status.third_party_disabled != null)
     $("s-thirdparty").checked = status.third_party_disabled;
 
-  curve.render(); // refresh live marker
+  // Smart-mode extras: operating-point trail, P/I/D readout, card title
+  if (mode === "pid") {
+    if (!pidTrail.length) seedPidTrail();
+    if (status.smooth_temp != null && status.fan_pct != null &&
+        status.last_update && status.last_update !== pidTrailTs) {
+      pidTrailTs = status.last_update;
+      pidTrail.push({ t: status.smooth_temp, f: status.fan_pct });
+      if (pidTrail.length > 90) pidTrail.shift();  // ~15 min at a 10s poll
+    }
+  } else if (pidTrail.length) {
+    pidTrail.length = 0;
+    pidTrailTs = 0;
+  }
+  $("curve-title").textContent = mode === "pid" ? "Smart controller (curve inactive)" : "Fan curve";
+  renderPidReadout();
+
+  curve.render(); // refresh live marker + Smart overlay
+}
+
+let seedingTrail = false;
+async function seedPidTrail() {
+  // Pre-fill the trajectory from recent history so it's visible on page load.
+  if (seedingTrail || pidTrail.length) return;
+  seedingTrail = true;
+  try {
+    const rows = await api("/api/history?seconds=900&points=90");
+    const seeds = rows.filter(r => r.control != null && r.fan_pct != null)
+                      .map(r => ({ t: r.control, f: r.fan_pct }));
+    pidTrail.unshift(...seeds);  // live points may have landed while fetching
+    if (pidTrail.length > 90) pidTrail.splice(0, pidTrail.length - 90);
+    curve.render();              // draw the trail without waiting for next poll
+  } catch { /* transient */ }
+  seedingTrail = false;
+}
+
+function renderPidReadout() {
+  const box = $("pid-readout");
+  const t = status && status.mode === "pid" ? status.pid_terms : null;
+  if (!t) { box.classList.add("hidden"); return; }
+  box.classList.remove("hidden");
+  const terms = [
+    ["P — error now", t.p, "reacts to distance from target"],
+    ["I — baseline", t.i, "learned quietest sustainable level"],
+    ["D — trend", t.d, "damps fast temperature swings"],
+  ];
+  const maxAbs = Math.max(25, ...terms.map(([, v]) => Math.abs(v)));
+  const rows = terms.map(([lab, v, tip]) => {
+    const w = Math.abs(v) / maxAbs * 50;                       // % of track width
+    const left = v >= 0 ? 50 : 50 - w;
+    const color = v >= 0 ? "#3987e5" : "#e66767";              // diverging blue/red
+    return `<div class="pid-row" title="${tip}">
+      <span class="pid-lab">${lab}</span>
+      <div class="pid-track"><div class="pid-mid"></div>
+        <div class="pid-fill" style="left:${left}%;width:${w}%;background:${color}"></div></div>
+      <span class="pid-val">${v > 0 ? "+" : ""}${v}%</span>
+    </div>`;
+  }).join("");
+  const err = `${t.err > 0 ? "+" : ""}${t.err}°C`;
+  box.innerHTML = rows + `<div class="pid-row total">
+    <span class="pid-lab">Output</span>
+    <span>error ${err} → P + I + D = <b>${t.out}%</b> fan, clamped to ${t.min_pct}–${t.max_pct}%</span>
+  </div>`;
 }
 
 /* =============================== mode + manual =========================== */

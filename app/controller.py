@@ -53,6 +53,7 @@ class Controller:
         self.pid_i = 0.0              # PID integral term (in fan %)
         self.pid_prev = None          # previous smoothed temp, for the D term
         self.pid_ready = False        # False -> re-initialize bumplessly
+        self.pid_terms = None         # last P/I/D breakdown, for the UI
         self.emergency = False
         self.degraded = False         # sensor reads failing -> Dell has control
         self.fail_count = 0
@@ -81,8 +82,9 @@ class Controller:
 
     # ----------------------------------------------------------------- status
     def status(self):
+        mode = self.store.get()["mode"]
         return {
-            "mode": self.store.get()["mode"],
+            "mode": mode,
             "emergency": self.emergency,
             "degraded": self.degraded,
             "idrac_ok": self.idrac_ok,
@@ -94,6 +96,7 @@ class Controller:
             "fan_pct": self.current_pct,
             "target_pct": self.target_pct,
             "pid_integral": round(self.pid_i, 1) if self.pid_ready else None,
+            "pid_terms": self.pid_terms if (mode == "pid" and self.pid_ready) else None,
             "third_party_disabled": self.third_party_disabled,
             "last_update": self.last_update,
             "last_error": self.last_error,
@@ -325,6 +328,12 @@ class Controller:
 
         target = int(round(out))
         self.target_pct = target
+        self.pid_terms = {
+            "setpoint": p["setpoint"], "err": round(err, 2),
+            "p": round(p["kp"] * err, 1), "i": round(self.pid_i, 1),
+            "d": round(d, 1), "out": target,
+            "min_pct": p["min_pct"], "max_pct": p["max_pct"],
+        }
         if self.current_pct is None:
             await self._set_pct(target, "initial smart target")
             return

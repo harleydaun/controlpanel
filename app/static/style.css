@@ -124,6 +124,17 @@ input[type="number"], input[type="text"], select {
    canvas without one resizes against its own height and grows forever */
 .chart-box { position: relative; width: 100%; }
 
+/* PID term readout (Smart mode) — diverging bars around a zero midline */
+.pid-readout { margin: 12px 0 4px; display: flex; flex-direction: column; gap: 7px; }
+.pid-row { display: flex; align-items: center; gap: 10px; font-size: 12px; }
+.pid-lab { width: 118px; color: var(--muted); flex-shrink: 0; }
+.pid-track { position: relative; flex: 1; height: 10px; background: var(--page); border-radius: 5px; }
+.pid-mid { position: absolute; left: 50%; top: -2px; bottom: -2px; width: 1px; background: var(--baseline); }
+.pid-fill { position: absolute; top: 0; bottom: 0; border-radius: 5px; }
+.pid-val { width: 64px; text-align: right; color: var(--ink-2); font-variant-numeric: tabular-nums; flex-shrink: 0; }
+.pid-row.total { color: var(--ink-2); border-top: 1px solid var(--grid); padding-top: 7px; }
+.pid-row.total b { color: var(--ink); }
+
 /* settings */
 .settings-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 12px; margin-top: 14px; }
 .settings-grid label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--ink-2); }
