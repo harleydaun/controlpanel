@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>R730xd Fan Control</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <h1>R730xd Fan Control</h1>
+    <span id="conn-badge" class="badge">connecting…</span>
+  </div>
+  <div class="mode-switch" id="mode-switch">
+    <button data-mode="curve">Curve</button>
+    <button data-mode="manual">Manual</button>
+    <button data-mode="dell">Dell Auto</button>
+  </div>
+</header>
+
+<div id="alert-banner" class="alert hidden"></div>
+
+<main>
+  <section class="tiles" id="tiles">
+    <div class="tile"><span class="tile-label">CPU (max)</span><span class="tile-value" id="t-cpu">–</span><span class="tile-sub" id="t-cpu-sub"></span></div>
+    <div class="tile"><span class="tile-label">Inlet</span><span class="tile-value" id="t-inlet">–</span><span class="tile-sub">ambient</span></div>
+    <div class="tile"><span class="tile-label">Exhaust</span><span class="tile-value" id="t-exhaust">–</span><span class="tile-sub">&nbsp;</span></div>
+    <div class="tile"><span class="tile-label">Fan output</span><span class="tile-value" id="t-fan">–</span><span class="tile-sub" id="t-fan-sub"></span></div>
+    <div class="tile"><span class="tile-label">Fan speed</span><span class="tile-value" id="t-rpm">–</span><span class="tile-sub" id="t-rpm-sub"></span></div>
+    <div class="tile"><span class="tile-label">Power</span><span class="tile-value" id="t-power">–</span><span class="tile-sub">system draw</span></div>
+  </section>
+
+  <section class="card" id="manual-card" hidden>
+    <div class="card-head"><h2>Manual fan speed</h2></div>
+    <div class="manual-row">
+      <input type="range" id="manual-slider" min="0" max="100" step="1" value="30">
+      <output id="manual-value">30%</output>
+      <button class="btn" id="manual-apply">Set</button>
+    </div>
+    <p class="hint">Fixed speed. The emergency handoff to Dell auto control stays active.</p>
+  </section>
+
+  <section class="card">
+    <div class="card-head">
+      <h2>Fan curve</h2>
+      <div class="head-actions">
+        <select id="preset-select">
+          <option value="">Presets…</option>
+          <option value="silent">Silent</option>
+          <option value="balanced">Balanced</option>
+          <option value="cool">Cool</option>
+        </select>
+        <button class="btn" id="curve-revert" disabled>Revert</button>
+        <button class="btn primary" id="curve-apply" disabled>Apply curve</button>
+      </div>
+    </div>
+    <div id="curve-editor"></div>
+    <div class="curve-toolbar">
+      <div id="point-edit" class="point-edit hidden">
+        <label>Temp <input type="number" id="pt-temp" min="0" max="120" step="0.5">°C</label>
+        <label>Fan <input type="number" id="pt-pct" min="0" max="100" step="1">%</label>
+        <button class="btn danger" id="pt-delete">Delete point</button>
+      </div>
+      <p class="hint">Drag points to shape the curve · double-click the chart to add a point · click a point to edit or delete it.</p>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-head">
+      <h2>History</h2>
+      <div class="range-switch" id="range-switch">
+        <button data-sec="900">15m</button>
+        <button data-sec="3600" class="active">1h</button>
+        <button data-sec="21600">6h</button>
+        <button data-sec="86400">24h</button>
+        <button data-sec="604800">7d</button>
+      </div>
+    </div>
+    <div class="chart-panel"><h3>Temperatures (°C)</h3><canvas id="chart-temps" height="170"></canvas></div>
+    <div class="chart-panel"><h3>Fan output (%)</h3><canvas id="chart-fan" height="120"></canvas></div>
+    <div class="chart-panel"><h3>Power (W)</h3><canvas id="chart-power" height="100"></canvas></div>
+  </section>
+
+  <div class="two-col">
+    <section class="card">
+      <div class="card-head"><h2>Controller settings</h2><button class="btn primary" id="settings-apply">Apply settings</button></div>
+      <div class="settings-grid">
+        <label>Poll interval (s)<input type="number" id="s-poll" min="2" max="120"></label>
+        <label>Failsafe fan %<input type="number" id="s-failsafe" min="10" max="100"></label>
+        <label>Control sensor
+          <select id="s-source">
+            <option value="cpu_max">Max CPU temp</option>
+            <option value="cpu_avg">Average CPU temp</option>
+            <option value="all_max">Max of all sensors</option>
+          </select>
+        </label>
+        <label>Reassert every (s)<input type="number" id="s-reassert" min="10" max="3600"></label>
+        <label>Smoothing α rising<input type="number" id="s-aup" min="0.01" max="1" step="0.01"></label>
+        <label>Smoothing α falling<input type="number" id="s-adown" min="0.01" max="1" step="0.01"></label>
+        <label>Deadband (%)<input type="number" id="s-deadband" min="0" max="20"></label>
+        <label>Max step up (%/poll)<input type="number" id="s-stepup" min="1" max="100"></label>
+        <label>Max step down (%/poll)<input type="number" id="s-stepdown" min="1" max="100"></label>
+        <label>Hold before slow-down (polls)<input type="number" id="s-hold" min="0" max="120"></label>
+        <label>Emergency trigger (°C)<input type="number" id="s-etrig" min="40" max="105"></label>
+        <label>Emergency clear (°C)<input type="number" id="s-eclear" min="30" max="100"></label>
+        <label>History retention (days)<input type="number" id="s-retention" min="1" max="365"></label>
+      </div>
+      <div class="settings-row">
+        <label class="toggle-row">
+          <input type="checkbox" id="s-thirdparty">
+          Disable Dell's third-party PCIe card cooling response
+        </label>
+        <button class="btn" id="test-conn">Test iDRAC connection</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-head"><h2>Profiles</h2></div>
+      <p class="hint">A profile stores the fan curve plus smoothing settings.</p>
+      <div class="profile-row">
+        <select id="profile-select"></select>
+        <button class="btn" id="profile-load">Load</button>
+        <button class="btn danger" id="profile-delete">Delete</button>
+      </div>
+      <div class="profile-row">
+        <input type="text" id="profile-name" placeholder="New profile name" maxlength="40">
+        <button class="btn" id="profile-save">Save current</button>
+      </div>
+      <div class="card-head" style="margin-top:20px"><h2>Fans</h2></div>
+      <table class="fans-table" id="fans-table"><tbody></tbody></table>
+    </section>
+  </div>
+
+  <section class="card">
+    <div class="card-head"><h2>Event log</h2></div>
+    <div class="events-wrap"><table class="events-table"><tbody id="events-body"></tbody></table></div>
+  </section>
+</main>
+
+<div id="toast" class="toast hidden"></div>
+
+<script src="/static/chart.umd.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>

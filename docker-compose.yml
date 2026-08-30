@@ -1,0 +1,23 @@
+services:
+  fan-control:
+    build: .
+    image: r730xd-fan-control:latest
+    container_name: r730xd-fan-control
+    restart: unless-stopped
+    ports:
+      - "8730:8000"
+    environment:
+      # iDRAC IPMI-over-LAN credentials (enable IPMI over LAN in iDRAC first)
+      IDRAC_HOST: ${IDRAC_HOST:?set IDRAC_HOST in the stack environment}
+      IDRAC_USER: ${IDRAC_USER:-root}
+      IDRAC_PASSWORD: ${IDRAC_PASSWORD:-calvin}
+      IPMI_INTERFACE: lanplus
+      # Set MOCK_IPMI: "true" to preview the UI with a simulated server
+      MOCK_IPMI: ${MOCK_IPMI:-false}
+    volumes:
+      - fan-data:/data
+    # give the shutdown handler time to restore Dell auto fan control
+    stop_grace_period: 30s
+
+volumes:
+  fan-data:

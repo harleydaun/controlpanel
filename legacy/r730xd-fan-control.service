@@ -1,0 +1,30 @@
+[Unit]
+Description=Dell R730xd Fan Control via IPMI
+After=network.target
+# Don't start until iDRAC IPMI device is available
+Wants=systemd-modules-load.service
+After=systemd-modules-load.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/r730xd-fan-control.sh
+Restart=on-failure
+RestartSec=10s
+
+# On stop, the script's SIGTERM handler restores Dell auto control.
+# Give it time to do that cleanly.
+KillSignal=SIGTERM
+TimeoutStopSec=15s
+
+# If the script dies hard without cleanup, systemd will restart it
+# and the script's startup resets fans to a known state.
+
+# Resource limits - this is a trivial script
+MemoryMax=64M
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+
