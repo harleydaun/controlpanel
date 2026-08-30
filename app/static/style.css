@@ -157,7 +157,8 @@ input[type="number"], input[type="text"], select {
   font-size: 12.5px; cursor: pointer;
 }
 .drive-chip:hover { border-color: var(--muted); }
-.drive-chip .dn { color: var(--muted); }
+.drive-chip .dn { color: var(--muted); display: flex; align-items: center; gap: 6px; }
+.drive-chip .dd { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
 .drive-chip .dt { font-variant-numeric: tabular-nums; color: var(--ink-2); }
 .drive-chip.warn { border-color: rgba(250, 178, 25, 0.6); }
 .drive-chip.warn .dt { color: var(--status-warn); font-weight: 600; }

@@ -302,13 +302,23 @@ const chPower = lineChart("chart-power", [
   { label: "Power", borderColor: COLORS.power, data: [] },
 ], { yMin: 0, unit: " W", legend: false });
 
-// One thin line per drive, all in one hue — identity comes from the hover
-// tooltip; only the warn setpoint gets a legend entry.
-const DRIVE_LINE = "rgba(213, 81, 129, 0.7)";  // slot 5 magenta
+// One line per drive, each with its own color and legend entry. The first 8
+// are the validated dark-mode categorical slots; the rest are curated extras
+// (beyond ~8 series, colors alone can't guarantee distinguishability — the
+// legend and tooltip remain the authoritative identity).
+const DRIVE_PALETTE = [
+  "#3987e5", "#d95926", "#199e70", "#c98500", "#d55181", "#008300", "#9085e9",
+  "#e66767", "#2fb8c5", "#94a13d", "#b08968", "#e08bb8", "#5bb98c", "#7aa6d8",
+];
+const driveColors = new Map();
+function driveColor(name) {
+  if (!driveColors.has(name))
+    driveColors.set(name, DRIVE_PALETTE[driveColors.size % DRIVE_PALETTE.length]);
+  return driveColors.get(name);
+}
 const chDrives = lineChart("chart-drives", [], { unit: "°C", legend: true });
 chDrives.options.scales.y.suggestedMin = 28;
 chDrives.options.scales.y.suggestedMax = 50;
-chDrives.options.plugins.legend.labels.filter = (item) => item.text === "Warn setpoint";
 
 async function loadHistory() {
   try {
@@ -334,7 +344,7 @@ async function loadHistory() {
         pointRadius: 0, pointHoverRadius: 0,
         data: warn != null ? [{ x: now - historyRange, y: warn }, { x: now, y: warn }] : [] },
       ...names.map(n => ({
-        label: n, borderColor: DRIVE_LINE, borderWidth: 1.5,
+        label: n, borderColor: driveColor(n), borderWidth: 1.8,
         data: driveRows[n].map(r => ({ x: r.ts, y: r.temp })),
       })),
     ];
@@ -429,7 +439,7 @@ function renderStatus() {
       const w = drives[n] >= warn;
       const safe = n.replace(/[<>"']/g, "");
       return `<div class="drive-chip${w ? " warn" : ""}" data-name="${safe}" title="Click to hide this drive">
-        <span class="dn">${safe}</span>
+        <span class="dn"><span class="dd" style="background:${driveColor(n)}"></span>${safe}</span>
         <span class="dt">${w ? "⚠ " : ""}${Math.round(drives[n])}°</span></div>`;
     }).join("");
   }
